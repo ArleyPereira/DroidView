@@ -64,6 +64,7 @@ struct MirrorSettings: Codable, Equatable, Sendable {
     var showTouchesWhileMirroring = false
     var clipboardSync = true
     var alwaysOnTop = false
+    var showControlBar = true
     var autoReconnect = true
     var autoConnectKnownWireless = true
     var screenshotFolder: String = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!.path

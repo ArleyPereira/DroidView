@@ -66,6 +66,10 @@ struct DeviceCommands: Commands {
                 .keyboardShortcut("0").disabled(s == nil)
             Button("Pixel a pixel (1:1)") { if let s { app.controller(for: s)?.pixelPerfect() } }
                 .keyboardShortcut("1").disabled(s == nil)
+            Button(app.settings.showControlBar ? "Ocultar barra de controles" : "Mostrar barra de controles") {
+                app.settings.showControlBar.toggle()
+            }
+            .keyboardShortcut("b", modifiers: [.command, .shift])
             Button("Logcat") { if let s { app.openLogcat(serial: s.serial, title: s.title) } }
                 .keyboardShortcut("l", modifiers: [.command, .shift]).disabled(s == nil)
         }

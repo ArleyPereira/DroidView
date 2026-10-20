@@ -68,6 +68,7 @@ private struct BehaviorSettings: View {
                 Toggle("Desligar a tela do aparelho ao fechar", isOn: $app.settings.powerOffOnClose)
                 Toggle("Mostrar toques enquanto espelha", isOn: $app.settings.showTouchesWhileMirroring)
                 Toggle("Sincronizar área de transferência", isOn: $app.settings.clipboardSync)
+                Toggle("Mostrar barra de controles flutuante", isOn: $app.settings.showControlBar)
                 Toggle("Janela sempre no topo", isOn: $app.settings.alwaysOnTop)
                     .onChange(of: app.settings.alwaysOnTop) { app.applyAlwaysOnTop() }
             }

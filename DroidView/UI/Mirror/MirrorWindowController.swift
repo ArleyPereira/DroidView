@@ -46,6 +46,7 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
 final class MirrorWindowController: NSWindowController, NSWindowDelegate {
     /// Espaço horizontal que o painel ocupa ao lado da janela (para caber na tela).
     static let panelReserve: CGFloat = 60 + ControlPanel.gap
+    private var panelReserve: CGFloat { app?.settings.showControlBar == false ? 0 : Self.panelReserve }
 
     let session: MirrorSession
     var onClose: (() -> Void)?
@@ -72,9 +73,22 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate {
 
         let panel = ControlPanel(rootView: ControlBar(session: session).environment(app))
         self.panel = panel
-        window.addChildWindow(panel, ordered: .above)
+        if app.settings.showControlBar { window.addChildWindow(panel, ordered: .above) }
         positionPanel()
         observe()
+    }
+
+    /// Mostra ou esconde a barra flutuante (ajuste "Mostrar barra de controles").
+    func setControlBarVisible(_ visible: Bool) {
+        guard let window, let panel else { return }
+        if visible {
+            if panel.parent == nil { window.addChildWindow(panel, ordered: .above) }
+            positionPanel()
+            panel.orderFront(nil)
+        } else {
+            window.removeChildWindow(panel)
+            panel.orderOut(nil)
+        }
     }
 
     /// Cola o painel à direita da janela (ou à esquerda, se não couber), centralizado na vertical.
@@ -144,7 +158,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate {
     func fitToScreen(keepCenter: Bool = true) {
         guard let window, let screen = window.screen ?? NSScreen.main else { return }
         let visible = screen.visibleFrame
-        let maxW = visible.width * 0.85 - Self.panelReserve
+        let maxW = visible.width * 0.85 - panelReserve
         let maxH = visible.height * 0.88 - titleBarHeight
         var h = min(maxH, maxW / aspect)
         if aspect > 1 { h = min(h, 900 / aspect) }
@@ -176,7 +190,7 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate {
             frame.origin = NSPoint(x: old.minX, y: old.maxY - frame.height)
         }
         if let visible = window.screen?.visibleFrame {
-            frame.origin.x = min(max(frame.origin.x, visible.minX), visible.maxX - frame.width - Self.panelReserve)
+            frame.origin.x = min(max(frame.origin.x, visible.minX), visible.maxX - frame.width - panelReserve)
             frame.origin.y = min(max(frame.origin.y, visible.minY), visible.maxY - frame.height)
         }
         window.setFrame(frame, display: true, animate: keepCenter)

@@ -9,7 +9,10 @@ final class AppModel {
 
     let devices = DeviceManager()
     var settings = MirrorSettings.load() {
-        didSet { settings.save() }
+        didSet {
+            settings.save()
+            if oldValue.showControlBar != settings.showControlBar { applyControlBarVisibility() }
+        }
     }
     /// Sessão da janela de espelhamento em foco (alvo dos comandos de menu).
     var activeSession: MirrorSession?
@@ -85,6 +88,10 @@ final class AppModel {
             c.window?.level = settings.alwaysOnTop ? .floating : .normal
             c.positionPanel()
         }
+    }
+
+    func applyControlBarVisibility() {
+        for c in mirrorWindows.values { c.setControlBarVisible(settings.showControlBar) }
     }
 
     func controller(for session: MirrorSession) -> MirrorWindowController? {
