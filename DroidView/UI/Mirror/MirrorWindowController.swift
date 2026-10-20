@@ -53,6 +53,8 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate {
     private weak var app: AppModel?
     private var lastVideoSize: CGSize = .zero
     private var panel: ControlPanel?
+    private var isEnforcingAspect = false
+    private var enforceWork: DispatchWorkItem?
 
     init(session: MirrorSession, app: AppModel) {
         self.session = session
@@ -110,7 +112,70 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate {
         panel.setFrameOrigin(NSPoint(x: x.rounded(), y: y.rounded()))
     }
 
-    func windowDidResize(_ notification: Notification) { positionPanel() }
+    func windowDidResize(_ notification: Notification) {
+        positionPanel()
+        // Redimensionamentos feitos pelo sistema (tiling ao soltar na borda da tela,
+        // "Preencher", Mission Control) ignoram o windowWillResize: corrige depois.
+        guard let window, !window.inLiveResize, !isEnforcingAspect else { return }
+        scheduleEnforceAspect()
+    }
+
+    /// O tiling anima a janela em vários passos; corrige só quando ela para de mudar.
+    private func scheduleEnforceAspect() {
+        enforceWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.enforceAspect() }
+        enforceWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
+
+    /// O tiling do sistema é animado como "live resize": corrige quando termina.
+    func windowDidEndLiveResize(_ notification: Notification) {
+        scheduleEnforceAspect()
+    }
+
+    /// Mantém a proporção do aparelho dentro do espaço que o sistema deu à janela:
+    /// ocupa a altura disponível e a largura proporcional, presa à borda onde foi solta.
+    private func enforceAspect() {
+        guard let window, !window.inLiveResize, session.videoSize.width > 0 else { return }
+        let frame = window.frame
+        let content = window.contentRect(forFrameRect: frame).size
+        guard content.height > 0, abs(content.width / content.height - aspect) > 0.01 else { return }
+
+        var size = content
+        if content.width / content.height > aspect {
+            size.width = (content.height * aspect).rounded()
+        } else {
+            size.height = (content.width / aspect).rounded()
+        }
+        var target = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
+        let visible = window.screen?.visibleFrame ?? frame
+        let edge: CGFloat = 4
+        if abs(frame.minX - visible.minX) < edge {
+            target.origin.x = frame.minX                       // solta na borda esquerda
+        } else if abs(frame.maxX - visible.maxX) < edge {
+            target.origin.x = frame.maxX - target.width        // solta na borda direita
+        } else {
+            target.origin.x = frame.midX - target.width / 2
+        }
+        target.origin.y = frame.maxY - target.height           // mantém o topo
+
+        isEnforcingAspect = true
+        window.setFrame(target, display: true, animate: true)
+        isEnforcingAspect = false
+        positionPanel()
+    }
+
+    /// Botão verde / duplo clique no título: ocupa a altura da tela mantendo a proporção.
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+        let available = window.contentRect(forFrameRect: newFrame).size
+        var size = NSSize(width: available.height * aspect, height: available.height)
+        let maxW = available.width - panelReserve
+        if size.width > maxW { size = NSSize(width: maxW, height: maxW / aspect) }
+        var frame = window.frameRect(forContentRect: NSRect(origin: .zero, size: size))
+        frame.origin.x = min(max(window.frame.midX - frame.width / 2, newFrame.minX), newFrame.maxX - frame.width - panelReserve)
+        frame.origin.y = newFrame.maxY - frame.height
+        return frame
+    }
     func windowDidMove(_ notification: Notification) { positionPanel() }
     func windowDidChangeScreen(_ notification: Notification) { positionPanel() }
 
@@ -199,6 +264,10 @@ final class MirrorWindowController: NSWindowController, NSWindowDelegate {
     // MARK: NSWindowDelegate
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        // Só o arraste manual passa por aqui com proporção travada. Mudanças do
+        // sistema (tiling, "Preencher") e as nossas próprias passam direto; o
+        // enforceAspect() encaixa depois na altura disponível.
+        guard sender.inLiveResize else { return frameSize }
         let current = sender.contentRect(forFrameRect: sender.frame).size
         let target = sender.contentRect(forFrameRect: NSRect(origin: .zero, size: frameSize)).size
         var content = target
