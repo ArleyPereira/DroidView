@@ -9,42 +9,67 @@ struct ControlBar: View {
     @AppStorage("LastDeepLink") private var lastDeepLink = ""
 
     var body: some View {
+        bar
+        .padding(ControlPanel.shadowInset)
+        .environment(\.colorScheme, .dark)
+        // O painel nunca é janela-chave; sem isso o vidro e as cores ficam "apagados".
+        .environment(\.appearsActive, true)
+        .environment(\.controlActiveState, .key)
+    }
+
+    /// Cápsula de vidro única; screenshot e gravação em destaque colorido.
+    private var bar: some View {
         GlassEffectContainer(spacing: 6) {
-            VStack(spacing: 6) {
-                BarButton("power", "Ligar/desligar tela (power)") { session.power() }
-                BarButton("speaker.plus", "Volume +") { session.volumeUp() }
-                BarButton("speaker.minus", "Volume −") { session.volumeDown() }
-
-                Divider().frame(width: 28).padding(.vertical, 4)
-
-                BarButton("arrowtriangle.backward", "Voltar  (botão direito / Esc)") { session.back() }
-                BarButton("circle", "Início  (⌘⇧H)") { session.home() }
-                BarButton("square", "Apps recentes  (⌘⇧R)") { session.recents() }
-
-                Divider().frame(width: 28).padding(.vertical, 4)
-
+            VStack(spacing: 4) {
+                deviceButtons()
+                Divider().frame(width: 26).padding(.vertical, 4)
+                navButtons()
+                Divider().frame(width: 26).padding(.vertical, 4)
                 BarButton("rotate.right", "Girar  (⌘→)") { session.rotate() }
-                BarButton("camera.viewfinder", "Screenshot sem perdas  (⌘S)") { session.takeScreenshot() }
-                BarButton(session.isRecording ? "stop.circle.fill" : "record.circle",
-                          session.isRecording ? "Parar gravação  (⌘⇧G)" : "Gravar tela  (⌘⇧G)",
-                          tint: session.isRecording ? .red : nil) { session.toggleRecording() }
                 BarButton(session.isScreenOff ? "iphone.slash" : "iphone", session.isScreenOff ? "Religar tela do aparelho" : "Apagar tela do aparelho (continua espelhando)") {
                     session.setScreenOff(!session.isScreenOff)
                 }
-
-                Divider().frame(width: 28).padding(.vertical, 4)
-
+                VStack(spacing: 8) {
+                    BarButton("camera.viewfinder", "Screenshot sem perdas  (⌘S)", variant: .prominent(.blue)) { session.takeScreenshot() }
+                    BarButton(session.isRecording ? "stop.fill" : "record.circle",
+                              session.isRecording ? "Parar gravação  (⌘⇧G)" : "Gravar tela  (⌘⇧G)",
+                              variant: .prominent(.red)) { session.toggleRecording() }
+                }
+                .padding(.vertical, 6)
                 moreMenu
             }
             .padding(.vertical, 10)
-            .padding(.horizontal, 7)
+            .padding(.horizontal, 6)
             .glassEffect(.regular, in: .capsule)
         }
-        .padding(ControlPanel.shadowInset)
-        .environment(\.colorScheme, .dark)
+    }
+
+    // MARK: Seções
+
+    @ViewBuilder
+    private func deviceButtons() -> some View {
+        BarButton("power", "Ligar/desligar tela (power)") { session.power() }
+        BarButton("speaker.plus", "Volume +") { session.volumeUp() }
+        BarButton("speaker.minus", "Volume −") { session.volumeDown() }
+    }
+
+    @ViewBuilder
+    private func navButtons() -> some View {
+        BarButton("arrowtriangle.backward", "Voltar  (botão direito / Esc)") { session.back() }
+        BarButton("circle", "Início  (⌘⇧H)") { session.home() }
+        BarButton("square", "Apps recentes  (⌘⇧R)") { session.recents() }
     }
 
     private var moreMenu: some View {
+        moreMenuCore
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .frame(width: 36, height: 36)
+            .contentShape(.circle)
+            .modifier(HoverHighlight())
+    }
+
+    private var moreMenuCore: some View {
         Menu {
             Section {
                 Button("Painel de notificações", systemImage: "bell") { session.expandNotifications() }
@@ -112,12 +137,7 @@ struct ControlBar: View {
                 .font(.system(size: 15, weight: .semibold))
                 .frame(width: 36, height: 36)
         }
-        .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
-        .frame(width: 36, height: 36)
-        .contentShape(.circle)
-        .background(HoverCircle())
         .help("Mais ferramentas")
         .task(id: session.serial) {
             toggles = await DevTools.readToggles(serial: session.serial)
@@ -209,50 +229,90 @@ struct ControlBar: View {
 }
 
 private struct BarButton: View {
+    enum Variant {
+        case plain
+        case prominent(Color)
+    }
+
     let icon: String
     let help: String
     var tint: Color?
+    var variant: Variant
     let action: () -> Void
 
-    init(_ icon: String, _ help: String, tint: Color? = nil, action: @escaping () -> Void) {
+    init(_ icon: String, _ help: String, tint: Color? = nil, variant: Variant = .plain, action: @escaping () -> Void) {
         self.icon = icon
         self.help = help
         self.tint = tint
+        self.variant = variant
         self.action = action
     }
 
+    private func label(_ size: CGFloat = 36) -> some View {
+        Image(systemName: icon)
+            .font(.system(size: 15, weight: .medium))
+            .foregroundStyle(tint ?? .primary)
+            .frame(width: size, height: size)
+            .contentShape(.circle)
+    }
+
     var body: some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 15, weight: .medium))
-                .foregroundStyle(tint ?? .primary)
-                .frame(width: 36, height: 36)
-                .contentShape(.circle)
+        styled
+            .help(help)
+            .accessibilityLabel(help.components(separatedBy: "  ").first ?? help)
+    }
+
+    @ViewBuilder
+    private var styled: some View {
+        switch variant {
+        case .plain:
+            Button(action: action) { label() }.buttonStyle(BarButtonStyle())
+        case .prominent(let color):
+            // Cor no próprio vidro: o painel nunca é janela-chave, e o macOS
+            // dessatura .tint/accent em janelas inativas.
+            Button(action: action) {
+                label(40)
+                    .foregroundStyle(.white)
+                    .background(Circle().fill(color.gradient).opacity(0.88))
+            }
+            .buttonStyle(ProminentHoverStyle())
+            .glassEffect(.regular.interactive(), in: .circle)
         }
-        .buttonStyle(BarButtonStyle())
-        .help(help)
-        .accessibilityLabel(help.components(separatedBy: "  ").first ?? help)
     }
 }
 
 /// Botão circular "transparente" dentro da cápsula de vidro: realça no hover e no clique.
 private struct BarButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(HoverCircle(pressed: configuration.isPressed))
-            .scaleEffect(configuration.isPressed ? 0.92 : 1)
-            .animation(.spring(duration: 0.2), value: configuration.isPressed)
+        configuration.label.modifier(HoverHighlight(isPressed: configuration.isPressed))
     }
 }
 
-private struct HoverCircle: View {
-    var pressed = false
+/// Realce de hover/clique. Fica no próprio botão (não num fundo atrás do ícone),
+/// senão o ícone "rouba" o evento de hover e o realce nunca acende.
+private struct HoverHighlight: ViewModifier {
+    var isPressed = false
+    var fill = true
     @State private var hovering = false
 
-    var body: some View {
-        Circle()
-            .fill(.white.opacity(pressed ? 0.22 : hovering ? 0.12 : 0))
+    func body(content: Content) -> some View {
+        content
+            .background {
+                if fill {
+                    Circle().fill(.white.opacity(isPressed ? 0.24 : hovering ? 0.14 : 0))
+                }
+            }
+            .brightness(!fill && hovering ? 0.08 : 0)
+            .scaleEffect(isPressed ? 0.92 : hovering ? 1.07 : 1)
+            .animation(.spring(duration: 0.22, bounce: 0.3), value: hovering)
+            .animation(.spring(duration: 0.18), value: isPressed)
             .onHover { hovering = $0 }
-            .animation(.easeOut(duration: 0.15), value: hovering)
+    }
+}
+
+/// Botões coloridos: clareiam e crescem levemente no hover.
+private struct ProminentHoverStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.modifier(HoverHighlight(isPressed: configuration.isPressed, fill: false))
     }
 }
