@@ -6,7 +6,6 @@ struct ScrcpyLaunchOptions: Sendable {
     var bitrate: Int
     var maxFps: Int
     var stayAwake: Bool
-    var showTouches: Bool
     var powerOffOnClose: Bool
     var clipboardAutosync: Bool
 }
@@ -62,7 +61,6 @@ final class ScrcpyServer: @unchecked Sendable {
         if options.maxSize > 0 { args.append("max_size=\(options.maxSize)") }
         if options.maxFps > 0 { args.append("max_fps=\(options.maxFps)") }
         if options.stayAwake { args.append("stay_awake=true") }
-        if options.showTouches { args.append("show_touches=true") }
         if options.powerOffOnClose { args.append("power_off_on_close=true") }
 
         let shellSocket = try adb.openService(serial: serial, "shell:" + args.joined(separator: " "))
