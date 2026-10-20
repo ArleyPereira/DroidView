@@ -115,7 +115,7 @@ final class MirrorSession: Identifiable {
         let options = ScrcpyLaunchOptions(
             codec: codec, maxSize: q.maxSize, bitrate: q.bitrate, maxFps: q.maxFps,
             stayAwake: settings.stayAwake,
-            showTouches: settings.showTouchesWhileMirroring, powerOffOnClose: settings.powerOffOnClose,
+            powerOffOnClose: settings.powerOffOnClose,
             clipboardAutosync: settings.clipboardSync)
         let server = ScrcpyServer(serial: serial)
         server.onLog = { [weak self] line in
@@ -141,7 +141,36 @@ final class MirrorSession: Identifiable {
         generation += 1
         if isRecording { toggleRecording() }
         teardown()
+        restoreShowTouches()
         state = .stopped
+    }
+
+    // MARK: Mostrar toques
+
+    /// Valor de `show_touches` do aparelho antes do espelhamento (restaurado ao fechar).
+    @ObservationIgnored private var originalShowTouches: String?
+
+    /// Aplica "mostrar toques" na hora, sem reiniciar o espelhamento. Controlado pelo
+    /// app (e não pelo scrcpy-server, que só lê a opção ao iniciar).
+    func applyShowTouches(_ on: Bool) {
+        let serial = self.serial
+        let needsOriginal = originalShowTouches == nil
+        Task.detached { [weak self] in
+            let adb = ADBClient.shared
+            if needsOriginal {
+                let original = (try? adb.shell(serial: serial, "settings get system show_touches"))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? "0"
+                await MainActor.run { if self?.originalShowTouches == nil { self?.originalShowTouches = original } }
+            }
+            _ = try? adb.shell(serial: serial, "settings put system show_touches \(on ? 1 : 0)")
+        }
+    }
+
+    /// Devolve o valor original ao fechar (síncrono: precisa terminar antes do app sair).
+    private func restoreShowTouches() {
+        guard let original = originalShowTouches else { return }
+        originalShowTouches = nil
+        _ = try? ADBClient.shared.shell(serial: serial, "settings put system show_touches \(original == "1" ? 1 : 0)")
     }
 
     func retry() {
@@ -172,6 +201,11 @@ final class MirrorSession: Identifiable {
         startVideoThread(socket: streams.video, codecRequested: codecRequested, generation: gen)
         startFPSTimer()
         if settings().turnScreenOffOnStart { setScreenOff(true) }
+        // Reaplica a cada (re)conexão; só mexe no aparelho se a opção estiver ligada
+        // ou se já tivermos mudado o valor nesta sessão.
+        if settings().showTouchesWhileMirroring || originalShowTouches != nil {
+            applyShowTouches(settings().showTouchesWhileMirroring)
+        }
     }
 
     private func startFailed(_ error: Error, codecRequested: VideoCodec, generation gen: Int) {

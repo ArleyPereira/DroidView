@@ -12,6 +12,9 @@ final class AppModel {
         didSet {
             settings.save()
             if oldValue.showControlBar != settings.showControlBar { applyControlBarVisibility() }
+            if oldValue.showTouchesWhileMirroring != settings.showTouchesWhileMirroring {
+                for s in sessions where s.state == .running { s.applyShowTouches(settings.showTouchesWhileMirroring) }
+            }
         }
     }
     /// Sessão da janela de espelhamento em foco (alvo dos comandos de menu).
