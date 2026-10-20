@@ -67,7 +67,7 @@ struct MirrorSettings: Codable, Equatable, Sendable {
     var autoReconnect = true
     var autoConnectKnownWireless = true
     var screenshotFolder: String = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!.path
-    var recordingFolder: String = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first!.appendingPathComponent("DroidView").path
+    var recordingFolder: String = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first!.path
 
     func resolved(preset: QualityPreset) -> (maxSize: Int, bitrate: Int, maxFps: Int) {
         if let v = preset.values { return (v.maxSize, v.bitrateMbps * 1_000_000, v.maxFps) }
@@ -89,7 +89,10 @@ struct MirrorSettings: Codable, Equatable, Sendable {
         }
         merged.merge(stored) { _, new in new }
         guard let mergedData = try? JSONSerialization.data(withJSONObject: merged),
-              let s = try? JSONDecoder().decode(MirrorSettings.self, from: mergedData) else { return MirrorSettings() }
+              var s = try? JSONDecoder().decode(MirrorSettings.self, from: mergedData) else { return MirrorSettings() }
+        // Padrão antigo (~/Movies/DroidView) → Mesa, que é o padrão atual.
+        let oldDefault = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first!.appendingPathComponent("DroidView").path
+        if s.recordingFolder == oldDefault { s.recordingFolder = MirrorSettings().recordingFolder }
         return s
     }
 
