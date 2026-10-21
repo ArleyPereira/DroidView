@@ -220,11 +220,32 @@ final class DeviceManager {
     func connect(service: MDNSService) async throws -> String {
         let type = service.type.hasSuffix(".") ? String(service.type.dropLast()) : service.type
         let name = "\(service.name).\(type)"
-        if let result = try? await Task.detached(operation: { try ADBClient.shared.connect(name) }).value {
-            return result
+        // Um adb recém-iniciado (ex.: reiniciado pela recuperação de "Rede local")
+        // ainda não resolve o nome mDNS e, segundos depois, conecta sozinho. Cair
+        // logo para IP:porta criava a segunda entrada do mesmo aparelho; então
+        // insistimos no nome por até ~10 s antes do fallback.
+        var lastError: Error = ADBError(message: "Não foi possível conectar a \(service.name)")
+        for attempt in 0..<10 {
+            if isConnected(service) { return "already connected to \(name)" }
+            do {
+                return try await Task.detached { try ADBClient.shared.connect(name) }.value
+            } catch {
+                lastError = error
+                guard Self.isUnresolvedName(error) else { break }
+                if attempt < 9 { try await Task.sleep(for: .seconds(1)) }
+            }
         }
+        if isConnected(service) { return "already connected to \(name)" }
+        // Último recurso: o mDNS do adb não enxerga o serviço (ex.: desativado).
+        guard Self.isUnresolvedName(lastError) else { throw lastError }
         let addr = try await discovery.resolve(service)
         return try await connect(address: addr)
+    }
+
+    /// O adb ainda não conhece o nome mDNS ("failed to resolve host" / "unknown host").
+    private static func isUnresolvedName(_ error: Error) -> Bool {
+        let m = error.localizedDescription.lowercased()
+        return m.contains("resolve") || m.contains("unknown host") || m.contains("nodename")
     }
 
     private func waitFor<T>(timeout: TimeInterval, _ probe: @escaping @MainActor () -> T?) async throws -> T {
