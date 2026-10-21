@@ -44,6 +44,7 @@ final class DeviceManager {
     @ObservationIgnored private var propsCache: [String: [String: String]] = [:]
     @ObservationIgnored private var fetching: Set<String> = []
     @ObservationIgnored private var lastAutoConnect: [String: Date] = [:]
+    @ObservationIgnored private var firstSeen: [String: Date] = [:]
     @ObservationIgnored private var reconnectTimer: Timer?
     @ObservationIgnored var settings: () -> MirrorSettings = { .load() }
 
@@ -79,11 +80,22 @@ final class DeviceManager {
 
     /// Serviços na rede que ainda não estão conectados.
     var discoverableServices: [MDNSService] {
-        let online = Set(onlineDevices.map(\.hardwareSerial))
-        return discovery.connectServices.filter { svc in
-            guard let s = svc.deviceSerial else { return true }
-            return !online.contains(s) && !devices.contains { $0.serial.hasPrefix(svc.name) && $0.isOnline }
+        discovery.connectServices.filter { !isConnected($0) }
+    }
+
+    /// O aparelho anunciado por este serviço mDNS já tem uma conexão no adb?
+    /// Considera o transport com o próprio nome do serviço (criado pelo mDNS do adb)
+    /// e qualquer outro transport do mesmo `ro.serialno`.
+    func isConnected(_ svc: MDNSService) -> Bool {
+        onlineDevices.contains { d in
+            d.serial.hasPrefix(svc.name) || (svc.deviceSerial != nil && d.hardwareSerial == svc.deviceSerial)
         }
+    }
+
+    /// Ainda há transport Wi‑Fi online sem propriedades lidas: não dá para saber
+    /// de qual aparelho ele é, então qualquer reconexão agora pode duplicar.
+    private var hasUnidentifiedWireless: Bool {
+        onlineDevices.contains { $0.isWireless && $0.props.isEmpty }
     }
 
     func start() {
@@ -137,7 +149,10 @@ final class DeviceManager {
                     let d = self.devices[i]
                     if d.isWireless, let hw = props["ro.serialno"], !hw.isEmpty {
                         var known = self.knownWireless
-                        known[hw] = serial
+                        // Prefere o nome mDNS: ele sobrevive à troca de IP/porta e não duplica.
+                        if !(known[hw]?.contains("._adb-tls-connect.") == true && !serial.contains("._adb-tls-connect.")) {
+                            known[hw] = serial
+                        }
                         self.knownWireless = known
                     }
                 }
@@ -189,17 +204,25 @@ final class DeviceManager {
             }
             // Dá alguns segundos para o adb conectar sozinho via mDNS antes de forçar.
             if deadline.timeIntervalSinceNow < 16,
-               let svc = discovery.connectServices.first(where: { guid == nil || $0.name == guid }) {
-                if let addr = try? await discovery.resolve(svc), (try? await connect(address: addr)) != nil {
-                    return svc.name
-                }
+               let svc = discovery.connectServices.first(where: { guid == nil || $0.name == guid }),
+               !isConnected(svc), (try? await connect(service: svc)) != nil {
+                return svc.deviceSerial ?? svc.name
             }
             try await Task.sleep(for: .seconds(1))
         }
         return "Pareado. Se não conectar sozinho, use \"Conectar\" na lista de dispositivos na rede."
     }
 
+    /// Conecta pelo nome do serviço mDNS (`adb-SERIAL-xxx._adb-tls-connect._tcp`):
+    /// o adb reaproveita o transport que ele mesmo cria via mDNS, então não surge
+    /// uma segunda entrada "IP:porta" para o mesmo aparelho (o Android Studio
+    /// mostraria dois dispositivos). IP:porta só como último recurso.
     func connect(service: MDNSService) async throws -> String {
+        let type = service.type.hasSuffix(".") ? String(service.type.dropLast()) : service.type
+        let name = "\(service.name).\(type)"
+        if let result = try? await Task.detached(operation: { try ADBClient.shared.connect(name) }).value {
+            return result
+        }
         let addr = try await discovery.resolve(service)
         return try await connect(address: addr)
     }
@@ -252,11 +275,14 @@ final class DeviceManager {
     // MARK: Reconexão automática
 
     private func autoConnect(_ services: [MDNSService]) {
-        guard settings().autoConnectKnownWireless else { return }
+        guard settings().autoConnectKnownWireless, !hasUnidentifiedWireless else { return }
         let known = knownWireless
-        let online = Set(onlineDevices.map(\.hardwareSerial))
         for svc in services {
-            guard let hw = svc.deviceSerial, known[hw] != nil, !online.contains(hw) else { continue }
+            guard let hw = svc.deviceSerial, known[hw] != nil, !isConnected(svc) else { continue }
+            // Dá tempo para o próprio adb conectar via mDNS antes de agirmos.
+            let seen = firstSeen[svc.name] ?? .now
+            firstSeen[svc.name] = seen
+            guard Date().timeIntervalSince(seen) > 8 else { continue }
             if let last = lastAutoConnect[svc.name], Date().timeIntervalSince(last) < 10 { continue }
             lastAutoConnect[svc.name] = .now
             Task { _ = try? await connect(service: svc) }
@@ -267,6 +293,7 @@ final class DeviceManager {
         guard settings().autoReconnect else { return }
         autoConnect(discovery.connectServices)
         // Endereços IP:porta clássicos (tcpip) que sumiram ou ficaram offline.
+        guard !hasUnidentifiedWireless else { return }
         let onlineHW = Set(onlineDevices.map(\.hardwareSerial))
         for (hw, address) in knownWireless where !onlineHW.contains(hw) && address.contains(":") && !address.contains("._adb") {
             if let last = lastAutoConnect[address], Date().timeIntervalSince(last) < 15 { continue }
