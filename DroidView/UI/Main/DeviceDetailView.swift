@@ -127,7 +127,6 @@ struct DeviceDetailView: View {
             info("Conexão adb", device.serial)
         }
         .font(.callout)
-        .textSelection(.enabled)
     }
 
     @ViewBuilder
@@ -135,7 +134,9 @@ struct DeviceDetailView: View {
         if let value, !value.isEmpty {
             GridRow {
                 Text(label).foregroundStyle(.secondary)
-                Text(value)
+                // Seleção só no valor: aplicada no Grid inteiro, o macOS 26
+                // desenhava algumas linhas espelhadas (de cabeça para baixo).
+                Text(value).textSelection(.enabled)
             }
         }
     }
