@@ -109,11 +109,18 @@ final class ADBClient: @unchecked Sendable {
     }
 
     /// `host:` request que responde com uma string com prefixo de tamanho.
-    func hostQuery(_ request: String) throws -> String {
+    /// `timeout`: limite para a resposta (connect/pair podem ficar presos em
+    /// "Operation timed out" do adb por mais de um minuto).
+    func hostQuery(_ request: String, timeout: TimeInterval? = nil) throws -> String {
         let s = try connectToServer()
         defer { s.close() }
-        try send(request, on: s)
-        return try readLengthPrefixed(s)
+        if let timeout { s.setReadTimeout(timeout) }
+        do {
+            try send(request, on: s)
+            return try readLengthPrefixed(s)
+        } catch let error as SocketError where timeout != nil && error.message.contains("temporarily unavailable") {
+            throw ADBError(message: "Tempo esgotado aguardando o adb (\(Int(timeout!)) s)")
+        }
     }
 
     /// Abre um serviço no dispositivo (shell:, exec:, sync:, localabstract:...).
@@ -165,7 +172,7 @@ final class ADBClient: @unchecked Sendable {
 
     func connect(_ address: String) throws -> String {
         try withLocalNetworkRecovery {
-            let result = try hostQuery("host:connect:\(address)")
+            let result = try hostQuery("host:connect:\(address)", timeout: 15)
             if result.contains("failed") || result.contains("cannot") || result.contains("unable") {
                 throw ADBError(message: result)
             }
@@ -203,7 +210,7 @@ final class ADBClient: @unchecked Sendable {
     /// (SPAKE2 + TLS), igual ao `adb pair`.
     func pair(address: String, code: String) throws -> String {
         try withLocalNetworkRecovery {
-            let result = try hostQuery("host:pair:\(code):\(address)")
+            let result = try hostQuery("host:pair:\(code):\(address)", timeout: 30)
             guard result.lowercased().contains("success") else {
                 if result.contains("Unable to start pairing client") {
                     // Detalhe real ("No route to host") só aparece no log do adb.
