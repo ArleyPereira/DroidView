@@ -25,6 +25,9 @@ final class AppModel {
 
     private init() {
         devices.settings = { [unowned self] in self.settings }
+        devices.isSerialInUse = { [unowned self] serial in
+            self.sessions.contains { $0.serial == serial && $0.state != .stopped }
+        }
     }
 
     func start() {

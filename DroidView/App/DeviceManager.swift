@@ -133,6 +133,7 @@ final class DeviceManager {
         }
         let serials = Set(entries.map(\.serial))
         propsCache = propsCache.filter { serials.contains($0.key) }
+        removeDuplicateFallbacks()
     }
 
     private func fetchProps(_ serial: String) {
@@ -147,6 +148,7 @@ final class DeviceManager {
                 if let i = self.devices.firstIndex(where: { $0.serial == serial }) {
                     self.devices[i].props = props
                     let d = self.devices[i]
+                    self.removeDuplicateFallbacks()
                     if d.isWireless, let hw = props["ro.serialno"], !hw.isEmpty {
                         var known = self.knownWireless
                         // Prefere o nome mDNS: ele sobrevive à troca de IP/porta e não duplica.
@@ -197,20 +199,33 @@ final class DeviceManager {
         progress("Pareado! Conectando…")
 
         let pairedSerial = guid.flatMap { MDNSService(name: $0, type: "", domain: "").deviceSerial }
-        let deadline = Date().addingTimeInterval(20)
+        let pairedAt = Date()
+        let deadline = pairedAt.addingTimeInterval(30)
+        var attemptRunning = false
+        var lastAttempt = Date.distantPast
+        // Acompanha o estado sem esperar os connects: uma tentativa pode demorar
+        // (IP antigo no cache mDNS do adb) e a tela ficava presa em "Conectando…".
         while Date() < deadline {
-            if let guid, let online = onlineDevices.first(where: { $0.serial.hasPrefix(guid) || $0.hardwareSerial == pairedSerial }) {
+            try Task.checkCancellation()
+            if let online = onlineDevices.first(where: { d in
+                (guid.map { d.serial.hasPrefix($0) } ?? false) || (pairedSerial != nil && d.hardwareSerial == pairedSerial)
+            }) {
                 return online.displayName
             }
             // Dá alguns segundos para o adb conectar sozinho via mDNS antes de forçar.
-            if deadline.timeIntervalSinceNow < 16,
-               let svc = discovery.connectServices.first(where: { guid == nil || $0.name == guid }),
-               !isConnected(svc), (try? await connect(service: svc)) != nil {
-                return svc.deviceSerial ?? svc.name
+            if Date().timeIntervalSince(pairedAt) > 4, !attemptRunning, Date().timeIntervalSince(lastAttempt) > 3,
+               let svc = discovery.connectServices.first(where: { guid == nil || $0.name == guid }), !isConnected(svc) {
+                attemptRunning = true
+                lastAttempt = .now
+                progress("Pareado! Conectando…")
+                Task {
+                    _ = try? await self.connect(service: svc)
+                    attemptRunning = false
+                }
             }
-            try await Task.sleep(for: .seconds(1))
+            try await Task.sleep(for: .milliseconds(500))
         }
-        return "Pareado. Se não conectar sozinho, use \"Conectar\" na lista de dispositivos na rede."
+        throw ADBError(message: "Pareado, mas o aparelho não respondeu. Confira se a Depuração sem fio continua ativa e use \"Conectar\" na lista de dispositivos na rede.")
     }
 
     /// Conecta pelo nome do serviço mDNS (`adb-SERIAL-xxx._adb-tls-connect._tcp`):
@@ -224,22 +239,47 @@ final class DeviceManager {
         // ainda não resolve o nome mDNS e, segundos depois, conecta sozinho. Cair
         // logo para IP:porta criava a segunda entrada do mesmo aparelho; então
         // insistimos no nome por até ~10 s antes do fallback.
-        var lastError: Error = ADBError(message: "Não foi possível conectar a \(service.name)")
         for attempt in 0..<10 {
             if isConnected(service) { return "already connected to \(name)" }
             do {
                 return try await Task.detached { try ADBClient.shared.connect(name) }.value
             } catch {
-                lastError = error
+                // Nome ainda desconhecido: o adb costuma conectar sozinho em instantes.
+                // Outros erros (ex.: IP antigo no cache mDNS do adb) vão direto ao fallback.
                 guard Self.isUnresolvedName(error) else { break }
                 if attempt < 9 { try await Task.sleep(for: .seconds(1)) }
             }
         }
         if isConnected(service) { return "already connected to \(name)" }
-        // Último recurso: o mDNS do adb não enxerga o serviço (ex.: desativado).
-        guard Self.isUnresolvedName(lastError) else { throw lastError }
+        // Último recurso: IP fresco do Bonjour do macOS. Se o adb depois conectar
+        // também pelo nome, removeDuplicateFallbacks() desfaz esta conexão.
         let addr = try await discovery.resolve(service)
-        return try await connect(address: addr)
+        let result = try await connect(address: addr)
+        ipFallbackSerials.insert(addr)
+        return result
+    }
+
+    /// Conexões por IP:porta criadas pelo fallback acima.
+    @ObservationIgnored private var ipFallbackSerials: Set<String> = []
+    /// O espelhamento está usando este serial? (fornecido pelo AppModel)
+    @ObservationIgnored var isSerialInUse: (String) -> Bool = { _ in false }
+
+    /// Se o mesmo aparelho também ficou online pelo nome mDNS, desconecta a entrada
+    /// por IP que nós criamos (a menos que um espelhamento esteja usando ela).
+    private func removeDuplicateFallbacks() {
+        for serial in ipFallbackSerials {
+            guard let ipDevice = device(serial: serial) else {
+                if devices.isEmpty == false { ipFallbackSerials.remove(serial) }
+                continue
+            }
+            guard !ipDevice.props.isEmpty else { continue }
+            let hasMDNS = onlineDevices.contains {
+                $0.serial != serial && $0.serial.contains("._adb-tls-connect.") && $0.hardwareSerial == ipDevice.hardwareSerial
+            }
+            guard hasMDNS, !isSerialInUse(serial) else { continue }
+            ipFallbackSerials.remove(serial)
+            Task.detached { try? ADBClient.shared.disconnect(serial) }
+        }
     }
 
     /// O adb ainda não conhece o nome mDNS ("failed to resolve host" / "unknown host").
