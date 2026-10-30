@@ -72,10 +72,6 @@ struct ControlBar: View {
     private var moreMenuCore: some View {
         Menu {
             Section {
-                Button("Painel de notificações", systemImage: "bell") { session.expandNotifications() }
-                Button("Configurações rápidas", systemImage: "switch.2") { session.expandQuickSettings() }
-            }
-            Section {
                 Menu("Opções do desenvolvedor", systemImage: "hammer") {
                     ForEach(DevToggle.allCases) { t in
                         Toggle(isOn: Binding(get: { toggles[t] ?? false }, set: { on in
@@ -158,8 +154,13 @@ struct ControlBar: View {
         let alert = NSAlert()
         alert.messageText = "Abrir deep link"
         alert.informativeText = "A URL é aberta com android.intent.action.VIEW."
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        // Várias linhas com quebra: links longos ficam visíveis por inteiro.
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 76))
         field.placeholderString = "myapp://rota/123 ou https://…"
+        field.usesSingleLineMode = false
+        field.cell?.wraps = true
+        field.cell?.isScrollable = false
+        field.lineBreakMode = .byCharWrapping
         field.stringValue = lastDeepLink
         alert.accessoryView = field
         alert.addButton(withTitle: "Abrir")
