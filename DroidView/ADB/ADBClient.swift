@@ -176,131 +176,85 @@ final class ADBClient: @unchecked Sendable {
     }
 
     func connect(_ address: String) throws -> String {
-        Log.info(.adb, "host:connect \(address)")
+        try viaBridgeIfBlocked(address, operation: "host:connect") { target in
+            let result = try hostQuery("host:connect:\(target)", timeout: 15)
+            if result.contains("failed") || result.contains("cannot") || result.contains("unable") {
+                throw ADBError(message: result)
+            }
+            return result
+        }
+    }
+
+    /// Pareamento da depuração sem fio (Android 11+). Feito pelo próprio servidor adb
+    /// (SPAKE2 + TLS), igual ao `adb pair`.
+    func pair(address: String, code: String) throws -> String {
         do {
-            let result = try withLocalNetworkRecovery {
-                let result = try hostQuery("host:connect:\(address)", timeout: 15)
-                if result.contains("failed") || result.contains("cannot") || result.contains("unable") {
-                    throw ADBError(message: result)
-                }
+            return try viaBridgeIfBlocked(address, operation: "host:pair") { target in
+                let result = try hostQuery("host:pair:\(code):\(target)", timeout: 30)
+                guard result.lowercased().contains("success") else { throw ADBError(message: result) }
                 return result
             }
-            Log.info(.adb, "host:connect \(address) → \(result)")
+        } catch {
+            throw Self.explainUnreachable(error, address: address)
+        }
+    }
+
+    /// Tenta direto; se o servidor adb não alcança a rede ("No route to host": foi
+    /// iniciado por outro app, como o Android Studio, sem permissão de Rede Local),
+    /// repete por uma ponte em 127.0.0.1 aberta pelo DroidView. Assim não precisamos
+    /// derrubar o servidor de ninguém nem pedir ajustes ao usuário.
+    private func viaBridgeIfBlocked(_ address: String, operation: String, _ body: (String) throws -> String) throws -> String {
+        Log.info(.adb, "\(operation) \(address)")
+        do {
+            let result = try body(address)
+            Log.info(.adb, "\(operation) \(address) → \(result)")
             return result
         } catch {
-            Log.warning(.adb, "host:connect \(address) falhou: \(error.localizedDescription)")
-            throw error
-        }
-    }
-
-    /// O macOS (privacidade de "Rede local") bloqueia o servidor adb quando ele foi
-    /// iniciado por um processo sem essa permissão: o erro é "No route to host".
-    /// Reiniciamos o servidor a partir do DroidView, que tem a permissão, e repetimos.
-    private func withLocalNetworkRecovery<T>(_ body: () throws -> T) throws -> T {
-        do {
-            return try body()
-        } catch {
-            guard error.localizedDescription.localizedCaseInsensitiveContains("no route to host") else { throw error }
-            Log.warning(.adb, "\"No route to host\" no servidor adb (\(serverOwnerDescription())); provável bloqueio de Rede Local")
-            guard canRestartForRecovery() else {
-                Log.warning(.adb, "Reinício do adb ignorado: já houve um nos últimos \(Int(Self.recoveryInterval)) s (evita ciclo com outro app que recria o servidor)")
+            let text = error.localizedDescription
+            let blocked = text.localizedCaseInsensitiveContains("no route to host")
+                || text.localizedCaseInsensitiveContains("unable to start pairing")
+            guard blocked, !LocalNetworkBridge.isBridge(address) else {
+                Log.warning(.adb, "\(operation) \(address) falhou: \(text)")
                 throw error
             }
-            restartServer()
-            Log.info(.adb, "Servidor adb reiniciado pelo DroidView (\(serverOwnerDescription())); repetindo")
-            return try body()
+            Log.warning(.adb, "\(operation) \(address): servidor adb sem acesso à rede (\(serverOwnerDescription())); usando ponte local")
+            let local = try LocalNetworkBridge.localAddress(for: address)
+            do {
+                let result = try body(local)
+                Log.info(.adb, "\(operation) \(local) (ponte → \(address)) → \(result)")
+                return result
+            } catch {
+                Log.error(.adb, "\(operation) \(local) (ponte → \(address)) falhou: \(error.localizedDescription)")
+                throw error
+            }
         }
     }
 
-    /// Outro app (ex.: Android Studio rodando `adb logcat`) recria o servidor logo
-    /// após o kill; sem permissão de Rede Local o erro volta e entrávamos num ciclo
-    /// de kill a cada poucos segundos. Limita a recuperação a uma vez por intervalo.
-    static let recoveryInterval: TimeInterval = 120
-    private var lastRecovery = Date.distantPast
-    private let recoveryLock = NSLock()
-
-    private func canRestartForRecovery() -> Bool {
-        recoveryLock.lock(); defer { recoveryLock.unlock() }
-        guard Date().timeIntervalSince(lastRecovery) > Self.recoveryInterval else { return false }
-        lastRecovery = Date()
-        return true
-    }
-
-    /// "pid 123 (iniciado por: /caminho/do/processo-pai)" do servidor adb na porta 5037.
+    /// "pid 123, iniciado por: /caminho/do/processo-pai" do servidor adb na porta 5037.
     func serverOwnerDescription() -> String {
-        let lsof = Process()
-        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-        lsof.arguments = ["-nP", "-t", "-iTCP:\(port)", "-sTCP:LISTEN"]
-        let pipe = Pipe()
-        lsof.standardOutput = pipe
-        lsof.standardError = FileHandle.nullDevice
-        guard (try? lsof.run()) != nil else { return "dono desconhecido" }
-        lsof.waitUntilExit()
-        let pid = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-            .split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
-        guard !pid.isEmpty else { return "nenhum servidor escutando" }
-        let ps = Process()
-        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
-        ps.arguments = ["-o", "ppid=", "-p", pid]
-        let p2 = Pipe()
-        ps.standardOutput = p2
-        try? ps.run(); ps.waitUntilExit()
-        let ppid = String(decoding: p2.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        let ps2 = Process()
-        ps2.executableURL = URL(fileURLWithPath: "/bin/ps")
-        ps2.arguments = ["-o", "command=", "-p", ppid]
-        let p3 = Pipe()
-        ps2.standardOutput = p3
-        try? ps2.run(); ps2.waitUntilExit()
-        let parent = String(decoding: p3.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return "pid \(pid), iniciado por: \(parent.isEmpty ? "pid \(ppid)" : parent)"
-    }
-
-    func restartServer() {
-        killServer()
-        for _ in 0..<20 where (try? TCPSocket(port: port, timeout: 0.3)) != nil {
-            Thread.sleep(forTimeInterval: 0.1)
+        func run(_ path: String, _ args: [String]) -> String {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: path)
+            p.arguments = args
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { return "" }
+            p.waitUntilExit()
+            return String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        try? startServer()
+        guard let pid = run("/usr/sbin/lsof", ["-nP", "-t", "-iTCP:\(port)", "-sTCP:LISTEN"])
+            .split(whereSeparator: \.isNewline).first.map(String.init) else { return "nenhum servidor escutando" }
+        let ppid = run("/bin/ps", ["-o", "ppid=", "-p", pid])
+        let parent = run("/bin/ps", ["-o", "command=", "-p", ppid])
+        return "pid \(pid), iniciado por: \(parent.isEmpty ? "pid \(ppid)" : parent)"
     }
 
     @discardableResult
     func disconnect(_ address: String) throws -> String {
         Log.info(.adb, "host:disconnect \(address)")
         return try hostQuery("host:disconnect:\(address)")
-    }
-
-    /// Pareamento da depuração sem fio (Android 11+). Feito pelo próprio servidor adb
-    /// (SPAKE2 + TLS), igual ao `adb pair`.
-    func pair(address: String, code: String) throws -> String {
-        Log.info(.adb, "host:pair \(address)")
-        do {
-            let result = try pairOnce(address: address, code: code)
-            Log.info(.adb, "host:pair \(address) → \(result)")
-            return result
-        } catch {
-            Log.error(.adb, "host:pair \(address) falhou: \(error.localizedDescription)")
-            throw error
-        }
-    }
-
-    private func pairOnce(address: String, code: String) throws -> String {
-        try withLocalNetworkRecovery {
-            let result: String
-            do {
-                result = try hostQuery("host:pair:\(code):\(address)", timeout: 30)
-            } catch {
-                throw Self.explainUnreachable(error, address: address)
-            }
-            guard result.lowercased().contains("success") else {
-                if result.contains("Unable to start pairing client") {
-                    // Detalhe real ("No route to host") só aparece no log do adb.
-                    throw ADBError(message: "\(result) (no route to host?)")
-                }
-                throw ADBError(message: result)
-            }
-            return result
-        }
     }
 
     /// "Host is down" / "Unable to start pairing client": o Mac não alcança o IP

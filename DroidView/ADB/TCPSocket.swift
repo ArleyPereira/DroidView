@@ -57,6 +57,14 @@ final class TCPSocket: @unchecked Sendable {
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &zero, socklen_t(MemoryLayout<timeval>.size))
     }
 
+    /// Socket já conectado (ex.: aceito por um listener).
+    init(acceptedFD: Int32) {
+        fd = acceptedFD
+        var on: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &on, socklen_t(MemoryLayout<Int32>.size))
+    }
+
     deinit { close() }
 
     func setReadTimeout(_ seconds: TimeInterval) {

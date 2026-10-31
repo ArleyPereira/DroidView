@@ -146,6 +146,12 @@ final class DeviceManager {
                     self.removeDuplicateFallbacks()
                     if d.isWireless, let hw = props["ro.serialno"], !hw.isEmpty {
                         var known = self.knownWireless
+                        // Porta da ponte local muda a cada execução: só marca como conhecido.
+                        if LocalNetworkBridge.isBridge(serial) {
+                            if known[hw] == nil { known[hw] = "mdns" }
+                            self.knownWireless = known
+                            return
+                        }
                         // Prefere o nome mDNS: ele sobrevive à troca de IP/porta e não duplica.
                         if !(known[hw]?.contains("._adb-tls-connect.") == true && !serial.contains("._adb-tls-connect.")) {
                             known[hw] = serial
@@ -239,7 +245,10 @@ final class DeviceManager {
         // ainda não resolve o nome mDNS e, segundos depois, conecta sozinho. Cair
         // logo para IP:porta criava a segunda entrada do mesmo aparelho; então
         // insistimos no nome por até ~10 s antes do fallback.
-        for attempt in 0..<10 {
+        // Se da última vez só deu pela ponte local, o servidor adb atual não resolve
+        // nomes mDNS (sem permissão de Rede Local): não espera os ~10 s à toa.
+        let attempts = bridgedServices.contains(service.name) ? 0 : 10
+        for attempt in 0..<attempts {
             if isConnected(service) { return "already connected to \(name)" }
             do {
                 return try await Task.detached { try ADBClient.shared.connect(name) }.value
@@ -259,11 +268,17 @@ final class DeviceManager {
         Log.warning(.connect, "adb não resolveu \(name); fallback por IP do Bonjour")
         let addr = try await discovery.resolve(service)
         let result = try await connect(address: addr)
-        ipFallbackSerials.insert(addr)
-        Log.info(.connect, "Conectado por IP (fallback): \(addr)")
+        // "connected to 127.0.0.1:5xxxx" quando passou pela ponte local.
+        let serial = result.components(separatedBy: "connected to ").last?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? addr
+        ipFallbackSerials.insert(serial)
+        if LocalNetworkBridge.isBridge(serial) { bridgedServices.insert(service.name) } else { bridgedServices.remove(service.name) }
+        Log.info(.connect, "Conectado por IP (fallback): \(serial)")
         return result
     }
 
+    /// Serviços cuja última conexão só funcionou pela ponte local.
+    @ObservationIgnored private var bridgedServices: Set<String> = []
     /// Conexões por IP:porta criadas pelo fallback acima.
     @ObservationIgnored private var ipFallbackSerials: Set<String> = []
     /// O espelhamento está usando este serial? (fornecido pelo AppModel)
