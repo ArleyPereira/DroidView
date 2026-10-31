@@ -33,11 +33,66 @@ final class LocalNetworkBridge: @unchecked Sendable {
         let bridge = LocalNetworkBridge(remoteHost: host, remotePort: port)
         try bridge.start()
         bridges[address] = bridge
+        remember(bridge.localAddress)
         Log.info(.connect, "Ponte local \(bridge.localAddress) → \(address) criada")
         return bridge.localAddress
     }
 
     static func isBridge(_ serial: String) -> Bool { serial.hasPrefix("127.0.0.1:") }
+
+    // MARK: Pontes de execuções anteriores
+
+    /// O adb mantém o transport de uma ponte que morreu (app fechado/recompilado)
+    /// como "offline" e tenta reconectar para sempre: o aparelho aparecia duplicado.
+    /// Guardamos os endereços que criamos para desconectá-los depois.
+    private static let defaultsKey = "LocalNetworkBridgeAddresses"
+
+    private static func remember(_ local: String) {
+        var all = UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []
+        if !all.contains(local) { all.append(local) }
+        UserDefaults.standard.set(all, forKey: defaultsKey)
+    }
+
+    private static func forget(_ locals: [String]) {
+        let all = (UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []).filter { !locals.contains($0) }
+        UserDefaults.standard.set(all, forKey: defaultsKey)
+    }
+
+    /// Desconecta no adb as pontes criadas por nós que não estão mais ativas.
+    static func disconnectStale(using adb: ADBClient) {
+        registryLock.lock()
+        let active = Set(bridges.values.filter { !$0.isClosed }.map(\.localAddress))
+        registryLock.unlock()
+        let stale = (UserDefaults.standard.stringArray(forKey: defaultsKey) ?? []).filter { !active.contains($0) }
+        guard !stale.isEmpty else { return }
+        for serial in stale {
+            Log.info(.connect, "Removendo ponte antiga \(serial) do adb")
+            _ = try? adb.disconnect(serial)
+        }
+        forget(stale)
+    }
+
+    /// Ao encerrar o app: tira todas as pontes do adb (elas morrem com o processo).
+    static func disconnectAll(using adb: ADBClient) {
+        registryLock.lock()
+        let all = bridges.values.map(\.localAddress)
+        bridges.values.forEach { $0.close() }
+        bridges.removeAll()
+        registryLock.unlock()
+        for serial in all { _ = try? adb.disconnect(serial) }
+        forget(all)
+    }
+
+    /// Fecha e desconecta uma ponte substituída por outra (ex.: a porta do aparelho mudou).
+    static func retire(_ local: String, using adb: ADBClient) {
+        registryLock.lock()
+        let key = bridges.first { $0.value.localAddress == local }?.key
+        if let key { bridges.removeValue(forKey: key)?.close() }
+        registryLock.unlock()
+        Log.info(.connect, "Ponte \(local) substituída; desconectando")
+        _ = try? adb.disconnect(local)
+        forget([local])
+    }
 
     /// Endereço remoto por trás de um serial de ponte (para logs/diagnóstico).
     static func remoteAddress(forLocal serial: String) -> String? {

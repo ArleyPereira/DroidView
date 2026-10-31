@@ -100,6 +100,7 @@ final class DeviceManager {
             onError: { [weak self] error in Task { @MainActor in self?.adbError = error } })
         self.tracker = tracker
         tracker.start()
+        Task.detached { LocalNetworkBridge.disconnectStale(using: .shared) }
         discovery.onConnectServicesChanged = { [weak self] services in self?.autoConnect(services) }
         discovery.start()
         reconnectTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: true) { [weak self] _ in
@@ -273,10 +274,18 @@ final class DeviceManager {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? addr
         ipFallbackSerials.insert(serial)
         if LocalNetworkBridge.isBridge(serial) { bridgedServices.insert(service.name) } else { bridgedServices.remove(service.name) }
+        // Ponte anterior do mesmo aparelho (porta antiga) ficaria offline e duplicada.
+        if let old = bridgeByService[service.name], old != serial {
+            ipFallbackSerials.remove(old)
+            Task.detached { LocalNetworkBridge.retire(old, using: .shared) }
+        }
+        if LocalNetworkBridge.isBridge(serial) { bridgeByService[service.name] = serial }
         Log.info(.connect, "Conectado por IP (fallback): \(serial)")
         return result
     }
 
+    /// Ponte local atual de cada serviço mDNS.
+    @ObservationIgnored private var bridgeByService: [String: String] = [:]
     /// Serviços cuja última conexão só funcionou pela ponte local.
     @ObservationIgnored private var bridgedServices: Set<String> = []
     /// Conexões por IP:porta criadas pelo fallback acima.

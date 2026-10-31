@@ -37,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             for s in AppModel.shared.sessions { s.stop() }
         }
+        LocalNetworkBridge.disconnectAll(using: .shared)
     }
 }
 
