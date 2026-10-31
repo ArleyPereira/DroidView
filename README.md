@@ -23,6 +23,13 @@ Espelhamento e controle de dispositivos Android, 100% nativo para macOS 26+ (Swi
 - App em primeiro plano: forçar parada, reiniciar, limpar dados; deep links; arrastar APK para instalar e arquivo para enviar
 - Logcat ao vivo com filtro por nível, pacote e busca
 
+## Logs
+
+Cada execução registra adb, descoberta mDNS, conexões e espelhamento em
+`~/Library/Logs/DroidView/droidview.log` (rotação em 5 MB, mantém `.1` e `.2`) e no
+Console.app (subsystem `com.arley.DroidView`). Menu **Ajuda › Mostrar logs do DroidView**.
+O log do próprio servidor adb fica em `$TMPDIR/adb.<uid>.log`.
+
 ## Build
 
 ```bash

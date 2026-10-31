@@ -63,8 +63,10 @@ final class WirelessDiscovery {
             Task { @MainActor in
                 switch state {
                 case .failed(let error):
+                    Log.error(.mdns, "Browser \(type) falhou: \(error.localizedDescription)")
                     self?.browserError = error.localizedDescription
                 case .waiting(let error):
+                    Log.warning(.mdns, "Browser \(type) aguardando: \(error.localizedDescription)")
                     self?.browserError = "Aguardando permissão de rede local: \(error.localizedDescription)"
                 case .ready:
                     self?.browserError = nil
@@ -78,6 +80,9 @@ final class WirelessDiscovery {
 
     private func update(type: String, services: [MDNSService]) {
         let unique = Array(Set(services)).sorted { $0.name < $1.name }
+        let previous = Set(type == Self.pairingType ? pairingServices : connectServices)
+        for s in unique where !previous.contains(s) { Log.info(.mdns, "Serviço apareceu: \(s.name) (\(type))") }
+        for s in previous where !unique.contains(s) { Log.info(.mdns, "Serviço sumiu: \(s.name) (\(type))") }
         if type == Self.pairingType {
             pairingServices = unique
         } else {
@@ -93,7 +98,14 @@ final class WirelessDiscovery {
         let resolver = ServiceResolver(service: service)
         resolvers[id] = resolver
         defer { resolvers[id] = nil }
-        return try await resolver.resolve(timeout: timeout)
+        do {
+            let address = try await resolver.resolve(timeout: timeout)
+            Log.info(.mdns, "Resolvido \(service.name) → \(address)")
+            return address
+        } catch {
+            Log.error(.mdns, "Falha ao resolver \(service.name): \(error.localizedDescription)")
+            throw error
+        }
     }
 }
 

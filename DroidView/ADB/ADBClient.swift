@@ -63,11 +63,14 @@ final class ADBClient: @unchecked Sendable {
         p.arguments = ["start-server"]
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
+        Log.info(.adb, "Iniciando servidor adb: \(adb.path) start-server")
         try p.run()
         p.waitUntilExit()
+        Log.info(.adb, "start-server terminou (status \(p.terminationStatus))")
     }
 
     func killServer() {
+        Log.warning(.adb, "Encerrando servidor adb (host:kill)")
         try? hostRequest("host:kill")
     }
 
@@ -173,12 +176,20 @@ final class ADBClient: @unchecked Sendable {
     }
 
     func connect(_ address: String) throws -> String {
-        try withLocalNetworkRecovery {
-            let result = try hostQuery("host:connect:\(address)", timeout: 15)
-            if result.contains("failed") || result.contains("cannot") || result.contains("unable") {
-                throw ADBError(message: result)
+        Log.info(.adb, "host:connect \(address)")
+        do {
+            let result = try withLocalNetworkRecovery {
+                let result = try hostQuery("host:connect:\(address)", timeout: 15)
+                if result.contains("failed") || result.contains("cannot") || result.contains("unable") {
+                    throw ADBError(message: result)
+                }
+                return result
             }
+            Log.info(.adb, "host:connect \(address) → \(result)")
             return result
+        } catch {
+            Log.warning(.adb, "host:connect \(address) falhou: \(error.localizedDescription)")
+            throw error
         }
     }
 
@@ -190,9 +201,59 @@ final class ADBClient: @unchecked Sendable {
             return try body()
         } catch {
             guard error.localizedDescription.localizedCaseInsensitiveContains("no route to host") else { throw error }
+            Log.warning(.adb, "\"No route to host\" no servidor adb (\(serverOwnerDescription())); provável bloqueio de Rede Local")
+            guard canRestartForRecovery() else {
+                Log.warning(.adb, "Reinício do adb ignorado: já houve um nos últimos \(Int(Self.recoveryInterval)) s (evita ciclo com outro app que recria o servidor)")
+                throw error
+            }
             restartServer()
+            Log.info(.adb, "Servidor adb reiniciado pelo DroidView (\(serverOwnerDescription())); repetindo")
             return try body()
         }
+    }
+
+    /// Outro app (ex.: Android Studio rodando `adb logcat`) recria o servidor logo
+    /// após o kill; sem permissão de Rede Local o erro volta e entrávamos num ciclo
+    /// de kill a cada poucos segundos. Limita a recuperação a uma vez por intervalo.
+    static let recoveryInterval: TimeInterval = 120
+    private var lastRecovery = Date.distantPast
+    private let recoveryLock = NSLock()
+
+    private func canRestartForRecovery() -> Bool {
+        recoveryLock.lock(); defer { recoveryLock.unlock() }
+        guard Date().timeIntervalSince(lastRecovery) > Self.recoveryInterval else { return false }
+        lastRecovery = Date()
+        return true
+    }
+
+    /// "pid 123 (iniciado por: /caminho/do/processo-pai)" do servidor adb na porta 5037.
+    func serverOwnerDescription() -> String {
+        let lsof = Process()
+        lsof.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        lsof.arguments = ["-nP", "-t", "-iTCP:\(port)", "-sTCP:LISTEN"]
+        let pipe = Pipe()
+        lsof.standardOutput = pipe
+        lsof.standardError = FileHandle.nullDevice
+        guard (try? lsof.run()) != nil else { return "dono desconhecido" }
+        lsof.waitUntilExit()
+        let pid = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            .split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        guard !pid.isEmpty else { return "nenhum servidor escutando" }
+        let ps = Process()
+        ps.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps.arguments = ["-o", "ppid=", "-p", pid]
+        let p2 = Pipe()
+        ps.standardOutput = p2
+        try? ps.run(); ps.waitUntilExit()
+        let ppid = String(decoding: p2.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let ps2 = Process()
+        ps2.executableURL = URL(fileURLWithPath: "/bin/ps")
+        ps2.arguments = ["-o", "command=", "-p", ppid]
+        let p3 = Pipe()
+        ps2.standardOutput = p3
+        try? ps2.run(); ps2.waitUntilExit()
+        let parent = String(decoding: p3.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return "pid \(pid), iniciado por: \(parent.isEmpty ? "pid \(ppid)" : parent)"
     }
 
     func restartServer() {
@@ -205,12 +266,25 @@ final class ADBClient: @unchecked Sendable {
 
     @discardableResult
     func disconnect(_ address: String) throws -> String {
-        try hostQuery("host:disconnect:\(address)")
+        Log.info(.adb, "host:disconnect \(address)")
+        return try hostQuery("host:disconnect:\(address)")
     }
 
     /// Pareamento da depuração sem fio (Android 11+). Feito pelo próprio servidor adb
     /// (SPAKE2 + TLS), igual ao `adb pair`.
     func pair(address: String, code: String) throws -> String {
+        Log.info(.adb, "host:pair \(address)")
+        do {
+            let result = try pairOnce(address: address, code: code)
+            Log.info(.adb, "host:pair \(address) → \(result)")
+            return result
+        } catch {
+            Log.error(.adb, "host:pair \(address) falhou: \(error.localizedDescription)")
+            throw error
+        }
+    }
+
+    private func pairOnce(address: String, code: String) throws -> String {
         try withLocalNetworkRecovery {
             let result: String
             do {
