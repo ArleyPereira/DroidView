@@ -189,6 +189,7 @@ final class DeviceManager {
         let pairingService = try await waitFor(timeout: 180) { [weak self] in
             self?.discovery.pairingServices.first { $0.name == creds.serviceName }
         }
+        Log.info(.connect, "QR: serviço de pareamento \(pairingService.name) encontrado")
         progress("Aparelho encontrado. Pareando…")
         let address = try await discovery.resolve(pairingService)
         let result = try await pair(address: address, code: creds.password)
@@ -196,6 +197,7 @@ final class DeviceManager {
         // "Successfully paired to 192.168.0.10:37123 [guid=adb-XXXX-yyyy]"
         let guid = result.range(of: #"guid=([^\]\s]+)"#, options: .regularExpression)
             .map { String(result[$0].dropFirst(5)) }
+        Log.info(.connect, "QR: pareado (guid \(guid ?? "?")); aguardando conexão")
         progress("Pareado! Conectando…")
 
         let pairedSerial = guid.flatMap { MDNSService(name: $0, type: "", domain: "").deviceSerial }
@@ -210,6 +212,7 @@ final class DeviceManager {
             if let online = onlineDevices.first(where: { d in
                 (guid.map { d.serial.hasPrefix($0) } ?? false) || (pairedSerial != nil && d.hardwareSerial == pairedSerial)
             }) {
+                Log.info(.connect, "QR: conectado como \(online.serial)")
                 return online.displayName
             }
             // Dá alguns segundos para o adb conectar sozinho via mDNS antes de forçar.
@@ -225,6 +228,7 @@ final class DeviceManager {
             }
             try await Task.sleep(for: .milliseconds(500))
         }
+        Log.error(.connect, "QR: pareado, mas sem conexão em 30 s")
         throw ADBError(message: "Pareado, mas o aparelho não respondeu. Confira se a Depuração sem fio continua ativa e use \"Conectar\" na lista de dispositivos na rede.")
     }
 
@@ -235,6 +239,7 @@ final class DeviceManager {
     func connect(service: MDNSService) async throws -> String {
         let type = service.type.hasSuffix(".") ? String(service.type.dropLast()) : service.type
         let name = "\(service.name).\(type)"
+        Log.info(.connect, "Conectando ao serviço \(name)")
         // Um adb recém-iniciado (ex.: reiniciado pela recuperação de "Rede local")
         // ainda não resolve o nome mDNS e, segundos depois, conecta sozinho. Cair
         // logo para IP:porta criava a segunda entrada do mesmo aparelho; então
@@ -246,16 +251,21 @@ final class DeviceManager {
             } catch {
                 // Nome ainda desconhecido: o adb costuma conectar sozinho em instantes.
                 // Outros erros (ex.: IP antigo no cache mDNS do adb) vão direto ao fallback.
-                guard Self.isUnresolvedName(error) else { break }
+                guard Self.isUnresolvedName(error) else {
+                    Log.warning(.connect, "Conexão pelo nome falhou (\(error.localizedDescription)); indo para o IP do Bonjour")
+                    break
+                }
                 if attempt < 9 { try await Task.sleep(for: .seconds(1)) }
             }
         }
         if isConnected(service) { return "already connected to \(name)" }
         // Último recurso: IP fresco do Bonjour do macOS. Se o adb depois conectar
         // também pelo nome, removeDuplicateFallbacks() desfaz esta conexão.
+        Log.warning(.connect, "adb não resolveu \(name); fallback por IP do Bonjour")
         let addr = try await discovery.resolve(service)
         let result = try await connect(address: addr)
         ipFallbackSerials.insert(addr)
+        Log.info(.connect, "Conectado por IP (fallback): \(addr)")
         return result
     }
 
@@ -278,6 +288,7 @@ final class DeviceManager {
             }
             guard hasMDNS, !isSerialInUse(serial) else { continue }
             ipFallbackSerials.remove(serial)
+            Log.info(.connect, "Removendo conexão duplicada por IP \(serial) (aparelho já online pelo nome mDNS)")
             Task.detached { try? ADBClient.shared.disconnect(serial) }
         }
     }
@@ -321,10 +332,12 @@ final class DeviceManager {
             knownWireless = known
             serials = devices.filter { $0.isWireless && $0.hardwareSerial == hw }.map(\.serial)
         }
+        Log.info(.connect, "Desconectar pedido pelo usuário: \(serials.joined(separator: ", "))")
         Task.detached { for s in serials { try? ADBClient.shared.disconnect(s) } }
     }
 
     func restartADBServer() {
+        Log.info(.adb, "Reinício do servidor adb pedido pelo usuário")
         Task.detached {
             ADBClient.shared.killServer()
             try? await Task.sleep(for: .seconds(0.5))
@@ -346,7 +359,11 @@ final class DeviceManager {
             guard Date().timeIntervalSince(seen) > 8 else { continue }
             if let last = lastAutoConnect[svc.name], Date().timeIntervalSince(last) < 10 { continue }
             lastAutoConnect[svc.name] = .now
-            Task { _ = try? await connect(service: svc) }
+            Log.info(.connect, "Auto-conexão: \(svc.name) (aparelho conhecido)")
+            Task {
+                do { _ = try await connect(service: svc) }
+                catch { Log.warning(.connect, "Auto-conexão de \(svc.name) falhou: \(error.localizedDescription)") }
+            }
         }
     }
 
@@ -359,6 +376,7 @@ final class DeviceManager {
         for (hw, address) in knownWireless where !onlineHW.contains(hw) && address.contains(":") && !address.contains("._adb") {
             if let last = lastAutoConnect[address], Date().timeIntervalSince(last) < 15 { continue }
             lastAutoConnect[address] = .now
+            Log.info(.connect, "Reconexão tcpip: \(address)")
             Task.detached { _ = try? ADBClient.shared.connect(address) }
         }
     }

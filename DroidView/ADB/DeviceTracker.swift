@@ -19,6 +19,7 @@ final class DeviceTracker: @unchecked Sendable {
     private var socket: TCPSocket?
     private let lock = NSLock()
     private var running = false
+    private var lastSummary = ""
 
     init(client: ADBClient = .shared,
          onUpdate: @escaping @Sendable ([ADBDeviceEntry]) -> Void,
@@ -55,13 +56,22 @@ final class DeviceTracker: @unchecked Sendable {
                 let s = try client.connectToServer()
                 lock.lock(); socket = s; lock.unlock()
                 try client.send("host:track-devices-l", on: s)
+                Log.info(.tracker, "track-devices conectado ao servidor adb")
                 onError(nil)
                 while isRunning {
                     let payload = try client.readLengthPrefixed(s)
-                    onUpdate(Self.parse(payload))
+                    let entries = Self.parse(payload)
+                    let summary = entries.map { "\($0.serial)=\($0.state)" }.joined(separator: ", ")
+                    if summary != lastSummary {
+                        lastSummary = summary
+                        Log.info(.tracker, "Dispositivos: \(summary.isEmpty ? "nenhum" : summary)")
+                    }
+                    onUpdate(entries)
                 }
             } catch {
                 guard isRunning else { break }
+                Log.warning(.tracker, "track-devices caiu: \(error.localizedDescription); reabrindo em 1,5 s")
+                lastSummary = ""
                 onError(error.localizedDescription)
                 onUpdate([])
                 Thread.sleep(forTimeInterval: 1.5)

@@ -62,7 +62,16 @@ final class MirrorSession: Identifiable {
     private(set) var title: String
     private(set) var isWireless: Bool
 
-    private(set) var state: State = .connecting("Preparando…")
+    private(set) var state: State = .connecting("Preparando…") {
+        didSet {
+            guard "\(state)" != "\(oldValue)" else { return }
+            switch state {
+            case .failed: Log.error(.mirror, "[\(serial)] estado: \(state)")
+            case .reconnecting: Log.warning(.mirror, "[\(serial)] estado: \(state)")
+            default: Log.info(.mirror, "[\(serial)] estado: \(state)")
+            }
+        }
+    }
     private(set) var videoSize: CGSize = .zero
     private(set) var fps: Int = 0
     private(set) var codecInUse: VideoCodec?
@@ -117,6 +126,7 @@ final class MirrorSession: Identifiable {
             stayAwake: settings.stayAwake,
             powerOffOnClose: settings.powerOffOnClose,
             clipboardAutosync: settings.clipboardSync)
+        Log.info(.mirror, "[\(serial)] iniciando espelhamento: \(codec.rawValue), max_size \(q.maxSize), \(q.bitrate / 1_000_000) Mbps, max_fps \(q.maxFps), \(isWireless ? "Wi‑Fi" : "USB")")
         let server = ScrcpyServer(serial: serial)
         server.onLog = { [weak self] line in
             Task { @MainActor in self?.appendLog(line) }
@@ -135,6 +145,7 @@ final class MirrorSession: Identifiable {
     }
 
     func stop() {
+        Log.info(.mirror, "[\(serial)] espelhamento encerrado pelo usuário")
         userStopped = true
         reconnectTask?.cancel()
         reconnectTask = nil
@@ -280,6 +291,7 @@ final class MirrorSession: Identifiable {
     }
 
     private func appendLog(_ line: String) {
+        Log.info(.server, "[\(serial)] \(line)")
         serverLog.append(line)
         if serverLog.count > 300 { serverLog.removeFirst(100) }
     }

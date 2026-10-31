@@ -26,12 +26,14 @@ struct DroidViewApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Log.startSession()
         MainActor.assumeIsolated { AppModel.shared.start() }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationWillTerminate(_ notification: Notification) {
+        Log.info(.app, "DroidView encerrando")
         MainActor.assumeIsolated {
             for s in AppModel.shared.sessions { s.stop() }
         }
@@ -42,6 +44,12 @@ struct DeviceCommands: Commands {
     let app: AppModel
 
     var body: some Commands {
+        CommandGroup(after: .help) {
+            Button("Mostrar logs do DroidView") {
+                Log.info(.ui, "Logs abertos no Finder")
+                NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL])
+            }
+        }
         CommandMenu("Dispositivo") {
             let s = app.activeSession
             Button("Voltar") { s?.back() }.keyboardShortcut("b").disabled(s == nil)
