@@ -97,6 +97,8 @@ final class ADBClient: @unchecked Sendable {
 
     func readLengthPrefixed(_ socket: TCPSocket) throws -> String {
         let lenHex = String(decoding: try socket.read(exactly: 4), as: UTF8.self)
+        // Alguns serviços (ex.: host:pair no adb 37) respondem OKAY e depois FAIL + motivo.
+        if lenHex == "FAIL" { throw ADBError(message: try readLengthPrefixed(socket)) }
         guard let len = Int(lenHex, radix: 16) else { throw ADBError(message: "Tamanho inválido: \(lenHex)") }
         return String(decoding: try socket.read(exactly: len), as: UTF8.self)
     }
@@ -210,7 +212,12 @@ final class ADBClient: @unchecked Sendable {
     /// (SPAKE2 + TLS), igual ao `adb pair`.
     func pair(address: String, code: String) throws -> String {
         try withLocalNetworkRecovery {
-            let result = try hostQuery("host:pair:\(code):\(address)", timeout: 30)
+            let result: String
+            do {
+                result = try hostQuery("host:pair:\(code):\(address)", timeout: 30)
+            } catch {
+                throw Self.explainUnreachable(error, address: address)
+            }
             guard result.lowercased().contains("success") else {
                 if result.contains("Unable to start pairing client") {
                     // Detalhe real ("No route to host") só aparece no log do adb.
@@ -220,6 +227,17 @@ final class ADBClient: @unchecked Sendable {
             }
             return result
         }
+    }
+
+    /// "Host is down" / "Unable to start pairing client": o Mac não alcança o IP
+    /// anunciado pelo aparelho (IP antigo em cache no mDNS ou rede isolada).
+    static func explainUnreachable(_ error: Error, address: String) -> Error {
+        let text = error.localizedDescription
+        let unreachable = ["host is down", "unable to start pairing", "timed out", "tempo esgotado", "connection refused"]
+        guard unreachable.contains(where: text.localizedCaseInsensitiveContains) else { return error }
+        return ADBError(message: "O Mac não conseguiu alcançar o celular em \(address) (\(text)). "
+            + "Confira em Depuração sem fio se o IP do aparelho é esse; se for diferente, use a aba Código de pareamento "
+            + "com o IP mostrado no celular. Redes com isolamento de clientes (comum em Wi‑Fi de convidados) também bloqueiam a conexão.")
     }
 
     func tcpip(serial: String, port: Int = 5555) throws -> String {
