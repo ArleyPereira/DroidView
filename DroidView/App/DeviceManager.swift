@@ -78,11 +78,6 @@ final class DeviceManager {
         return result
     }
 
-    /// Serviços na rede que ainda não estão conectados.
-    var discoverableServices: [MDNSService] {
-        discovery.connectServices.filter { !isConnected($0) }
-    }
-
     /// O aparelho anunciado por este serviço mDNS já tem uma conexão no adb?
     /// Considera o transport com o próprio nome do serviço (criado pelo mDNS do adb)
     /// e qualquer outro transport do mesmo `ro.serialno`.
