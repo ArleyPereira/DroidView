@@ -61,13 +61,6 @@ struct ContentView: View {
                         }
                 }
             }
-            if !devices.discoverableServices.isEmpty {
-                Section("Na rede (depuração sem fio)") {
-                    ForEach(devices.discoverableServices) { svc in
-                        NetworkServiceRow(service: svc)
-                    }
-                }
-            }
         }
         .listStyle(.sidebar)
         .safeAreaInset(edge: .bottom) {
@@ -115,41 +108,6 @@ struct DeviceRow: View {
             }
         }
         .padding(.vertical, 3)
-    }
-}
-
-private struct NetworkServiceRow: View {
-    let service: MDNSService
-    @Environment(AppModel.self) private var app
-    @State private var connecting = false
-    @State private var error: String?
-
-    var body: some View {
-        HStack {
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .foregroundStyle(.secondary)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(service.deviceSerial ?? service.name).lineLimit(1)
-                Text(error ?? "Pareado anteriormente?").font(.caption).foregroundStyle(error == nil ? Color.secondary : Color.orange).lineLimit(2)
-            }
-            Spacer()
-            if connecting {
-                ProgressView().controlSize(.small)
-            } else {
-                Button("Conectar") {
-                    connecting = true
-                    error = nil
-                    Task {
-                        do { _ = try await app.devices.connect(service: service) }
-                        catch { self.error = "Pareie primeiro (QR ou código)" }
-                        connecting = false
-                    }
-                }
-                .buttonStyle(.glass)
-                .controlSize(.small)
-            }
-        }
     }
 }
 
