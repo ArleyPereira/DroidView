@@ -430,7 +430,6 @@ final class MirrorSession: Identifiable {
     func volumeDown() { press(AndroidKey.volumeDown) }
     func rotate() { control?.send(.rotateDevice) }
     func expandNotifications() { control?.send(.expandNotificationPanel) }
-    func expandQuickSettings() { control?.send(.expandSettingsPanel) }
     func collapsePanels() { control?.send(.collapsePanels) }
 
     func setScreenOff(_ off: Bool) {
